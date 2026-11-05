@@ -276,6 +276,8 @@ def pull_ipa(a, bundle, out_dir):
                 print("    Install bagbak (npm i -g bagbak) and make sure frida-server runs on "
                       "the device, or use frida-ios-dump. Packaging the encrypted copy anyway.")
 
+        if a.info:
+            report_appdir(os.path.join(payload, app_name))
         os.makedirs(out_dir, exist_ok=True)
         ipa = os.path.join(out_dir, f"{safe_name(bid)}_{safe_name(ver)}{'_encrypted' if enc else ''}.ipa")
         with zipfile.ZipFile(ipa, "w", zipfile.ZIP_DEFLATED) as z:
@@ -297,6 +299,141 @@ def pull_ipa(a, bundle, out_dir):
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- app info report
+
+MAX_EXE_BYTES = 3 << 30  # refuse absurd executables inside an IPA
+
+
+def get_entitlements(exe_path):
+    """Best-effort: parse XML entitlements from the code-signature blob near the end."""
+    try:
+        with open(exe_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - (4 << 20)))
+            tail = f.read()
+        for blob in re.findall(rb"<\?xml.*?</plist>", tail, re.S):
+            try:
+                d = plistlib.loads(blob)
+            except Exception:
+                continue
+            if isinstance(d, dict) and d:
+                return d
+    except OSError:
+        pass
+    return {}
+
+
+def fmt_val(v, limit=70):
+    if isinstance(v, (list, tuple)):
+        v = ", ".join(clean(x) for x in v)
+    elif isinstance(v, dict):
+        v = "{" + ", ".join(clean(k) for k in v) + "}"
+    v = clean(v)
+    return v if len(v) <= limit else v[:limit - 1] + "…"
+
+
+def report_appdir(app_dir):
+    """Print a summary of an unpacked .app directory (or skeleton of one)."""
+    try:
+        with open(os.path.join(app_dir, "Info.plist"), "rb") as f:
+            info = plistlib.load(f)
+    except Exception as e:
+        print(f"[!] Could not read Info.plist: {clean(e)}")
+        return
+    exe_name = info.get("CFBundleExecutable")
+    exe = os.path.join(app_dir, exe_name) if isinstance(exe_name, str) else None
+    families = {1: "iPhone", 2: "iPad", 3: "Apple TV", 4: "Watch"}
+
+    def row(label, value):
+        print(f"{label:<15}{value}")
+
+    name = info.get("CFBundleDisplayName") or info.get("CFBundleName", "?")
+    print(f"\n== {clean(name)} ({clean(info.get('CFBundleIdentifier', '?'))}) ==")
+    row("Version", f"{fmt_val(info.get('CFBundleShortVersionString', '?'))} "
+                   f"(build {fmt_val(info.get('CFBundleVersion', '?'))})")
+    row("Executable", clean(exe_name or "?"))
+    row("Min iOS", fmt_val(info.get("MinimumOSVersion", "?")))
+    fam = info.get("UIDeviceFamily")
+    if isinstance(fam, list):
+        row("Device family", ", ".join(families.get(x, str(x)) for x in fam if isinstance(x, int)))
+    if exe and os.path.isfile(exe):
+        enc = is_encrypted(exe)
+        row("Encrypted", "YES (FairPlay, cryptid=1)" if enc else "no")
+    schemes = sorted({sc for t in info.get("CFBundleURLTypes", []) if isinstance(t, dict)
+                      for sc in t.get("CFBundleURLSchemes", []) if isinstance(sc, str)})
+    if schemes:
+        row("URL schemes", fmt_val(schemes, 100))
+    if info.get("UIBackgroundModes"):
+        row("Background", fmt_val(info["UIBackgroundModes"], 100))
+    ats = info.get("NSAppTransportSecurity")
+    if isinstance(ats, dict):
+        warn = "  <-- insecure" if ats.get("NSAllowsArbitraryLoads") is True else ""
+        row("ATS", f"customised: {fmt_val(ats, 80)}{warn}")
+    else:
+        row("ATS", "default (HTTPS enforced)")
+    perms = sorted((k, v) for k, v in info.items()
+                   if isinstance(k, str) and k.startswith("NS") and k.endswith("UsageDescription"))
+    row("Permissions", f"{len(perms)}")
+    for k, v in perms:
+        print(f"    {clean(k)}: {fmt_val(v, 60)}")
+    ents = get_entitlements(exe) if exe and os.path.isfile(exe) else {}
+    row("Entitlements", f"{len(ents)}" if ents else "none found")
+    for k in sorted(ents, key=str):
+        print(f"    {clean(k)}: {fmt_val(ents[k], 60)}")
+    fw_dir = os.path.join(app_dir, "Frameworks")
+    fws = sorted(os.listdir(fw_dir)) if os.path.isdir(fw_dir) else []
+    row("Frameworks", f"{len(fws)}")
+    if fws:
+        print("    " + fmt_val(fws, 200))
+    row("Provisioning", "embedded.mobileprovision present"
+        if os.path.exists(os.path.join(app_dir, "embedded.mobileprovision")) else "none")
+    print()
+
+
+def report_ipa(ipa_path):
+    """Inspect a local IPA without unpacking it wholesale."""
+    if not os.path.isfile(ipa_path):
+        sys.exit(f"not a file: {ipa_path}")
+    work = tempfile.mkdtemp(prefix="getipa_info_")
+    try:
+        with zipfile.ZipFile(ipa_path) as z:
+            names = z.namelist()
+            apps = {m.group(1) for n in names
+                    if (m := re.match(r"^Payload/([^/]+\.app)/Info\.plist$", n))}
+            if len(apps) != 1:
+                sys.exit("This does not look like an IPA (expected one Payload/<name>.app).")
+            app = apps.pop()
+            skel = os.path.join(work, "app.app")  # fixed local name: never trust zip paths
+            os.makedirs(skel)
+
+            def copy(member, dest):
+                zi = z.getinfo(member)
+                if zi.file_size > MAX_EXE_BYTES:
+                    sys.exit(f"refusing oversized member: {clean(member)}")
+                with z.open(zi) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+            copy(f"Payload/{app}/Info.plist", os.path.join(skel, "Info.plist"))
+            with open(os.path.join(skel, "Info.plist"), "rb") as f:
+                exe_name = plistlib.load(f).get("CFBundleExecutable")
+            if isinstance(exe_name, str) and f"Payload/{app}/{exe_name}" in names \
+                    and "/" not in exe_name:
+                copy(f"Payload/{app}/{exe_name}", os.path.join(skel, exe_name))
+            for n in names:
+                m = re.match(rf"^Payload/{re.escape(app)}/Frameworks/([^/]+)/$", n) or \
+                    re.match(rf"^Payload/{re.escape(app)}/Frameworks/([^/]+)/[^/]+$", n)
+                if m:
+                    os.makedirs(os.path.join(skel, "Frameworks", safe_name(m.group(1))), exist_ok=True)
+            if f"Payload/{app}/embedded.mobileprovision" in names:
+                open(os.path.join(skel, "embedded.mobileprovision"), "wb").close()
+        print(f"IPA: {clean(os.path.basename(ipa_path))}")
+        report_appdir(skel)
+    except zipfile.BadZipFile:
+        sys.exit("not a valid zip/IPA file")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default=os.environ.get("GETIPA_HOST"),
@@ -310,9 +447,16 @@ def main():
     ap.add_argument("--include-system", action="store_true", help="include com.apple.* apps")
     ap.add_argument("--bundle-id", "-b", help="bundle id (or substring) to extract")
     ap.add_argument("-o", "--out", default="./ipas")
+    ap.add_argument("--info", action="store_true",
+                    help="print an app report (permissions, entitlements, ATS...) after extracting")
+    ap.add_argument("--info-file", metavar="IPA",
+                    help="print the report for a local .ipa and exit (no device needed)")
     ap.add_argument("--frida-host", action="store_true",
                     help="have bagbak connect to frida-server over the network at --host")
     a = ap.parse_args()
+    if a.info_file:
+        report_ipa(a.info_file)
+        return
     a.password = os.environ.get("SSH_PASSWORD")
     if not a.host:
         if not sys.stdin.isatty():

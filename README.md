@@ -13,6 +13,7 @@
 - **Interactive** – just run `getipa`; it asks for username, device IP and password, then shows your apps.
 - **Recent first** – apps sorted by install/update time; system apps (`com.apple.*`) excluded by default.
 - **One-shot or scripted** – flags and environment variables for automation.
+- **Built-in app report** – permissions, entitlements, ATS settings, URL schemes, frameworks and encryption status, for a fresh extraction or any local IPA.
 - **Encryption-aware** – detects FairPlay-encrypted binaries (`cryptid=1`) and hands off to [`bagbak`](https://github.com/ChiChou/bagbak) for a decrypted dump when installed.
 - **Hardened against a hostile device** – treats everything coming back from the phone as untrusted (see [Security](#security)).
 - **Zero dependencies** – Python 3.8+ standard library and your system `ssh`.
@@ -70,11 +71,32 @@ getipa --host 192.168.1.9 --key ~/.ssh/id_ed25519 -n 25
 | `--list` | List apps and exit |
 | `-n N` / `--all` | Show the N most recent apps (default 10) / everything |
 | `-b`, `--bundle-id` | Extract an app by bundle ID or name |
+| `--info` | Print the app report after extracting |
+| `--info-file IPA` | Print the report for a local `.ipa` and exit (no device needed) |
 | `--include-system` | Include `com.apple.*` apps |
 | `-o DIR` | Output directory (default `./ipas`) |
 | `--frida-host` | Let `bagbak` reach `frida-server` over the network |
 
 Environment defaults: `GETIPA_HOST`, `GETIPA_PORT`, `GETIPA_USER`, `SSH_PASSWORD`.
+
+### App report
+
+```sh
+getipa --info-file ./ipas/com.example.app_2.4.1.ipa     # offline, any IPA
+getipa -b com.example.app --info                         # extract + report
+```
+```
+== Example (com.example.app) ==
+Version        2.4.1 (build 301)
+Min iOS        15.0
+Encrypted      YES (FairPlay, cryptid=1)
+ATS            customised: {NSAllowsArbitraryLoads}  <-- insecure
+Permissions    2
+    NSCameraUsageDescription: Scan codes
+Entitlements   2
+    aps-environment: production
+Frameworks     1
+```
 
 ## About encryption
 
