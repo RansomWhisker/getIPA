@@ -8,3 +8,6 @@ __pycache__/
 *.pem
 id_*
 node_modules/
+dist/
+build/
+*.egg-info/

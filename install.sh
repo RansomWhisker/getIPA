@@ -24,8 +24,8 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 echo "[*] Installing bundled bagbak (pinned version, from package-lock.json) ..."
-if (cd "$here" && npm ci --omit=dev --no-fund --no-audit >/dev/null 2>&1) \
-   || (cd "$here" && npm install --omit=dev --no-fund --no-audit >/dev/null 2>&1); then
+if (cd "$here/getipa_cli/npm" && npm ci --omit=dev --no-fund --no-audit >/dev/null 2>&1) \
+   || (cd "$here/getipa_cli/npm" && npm install --omit=dev --no-fund --no-audit >/dev/null 2>&1); then
   echo "[+] bagbak ready."
 else
   echo "[!] bagbak failed to install (Node $(node --version 2>/dev/null))."

@@ -28,13 +28,24 @@
 
 ## Install
 
+**With pipx (recommended):**
+
+```sh
+pipx install git+https://github.com/RansomWhisker/getIPA
+getipa --install-bagbak     # one-time: fetches the pinned bagbak (needs Node.js/npm) for decrypted dumps
+```
+
+`--install-bagbak` runs `npm ci` against the lockfile shipped in the package and installs into `~/.local/share/getipa` — nothing is installed globally. Skip it if you only want encrypted copies.
+
+**From a clone:**
+
 ```sh
 git clone https://github.com/RansomWhisker/getIPA.git
 cd getIPA
 ./install.sh            # links getipa into ~/.local/bin AND installs the bundled bagbak
 ```
 
-`install.sh` runs `npm ci` to fetch a **pinned** version of `bagbak` (see `package-lock.json`) into this folder — nothing is installed globally. Skip it with `SKIP_BAGBAK=1 ./install.sh` if you only want encrypted copies.
+`install.sh` does the same pinned `npm ci` (see `getipa_cli/npm/package-lock.json`) inside the clone. Skip it with `SKIP_BAGBAK=1 ./install.sh`.
 
 **For decrypted IPAs you also need `frida-server` on the iPhone:** install it from your jailbreak's package manager (Sileo / Zebra — add the Frida repo `https://build.frida.re` if it isn't listed), make sure it's running, and keep its version in step with the Frida version `bagbak` bundles. If `getipa --decrypted` fails, this is the first thing to check.
 

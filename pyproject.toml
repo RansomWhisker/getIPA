@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "getipa"
+version = "1.0.0"
+description = "Pull an app from a jailbroken iPhone over SSH and package it as an IPA (decrypted via bagbak)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+getipa = "getipa_cli.cli:main"
+
+[project.urls]
+Homepage = "https://rudranetra.com/tools"
+Source = "https://github.com/RansomWhisker/getIPA"
+
+[tool.setuptools]
+packages = ["getipa_cli"]
+
+[tool.setuptools.package-data]
+getipa_cli = ["npm/package.json", "npm/package-lock.json"]
