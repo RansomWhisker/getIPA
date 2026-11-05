@@ -63,8 +63,11 @@ def data_dir():
 
 
 def _bin(root):
-    p = os.path.join(root, "node_modules", ".bin", "bagbak")
-    return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
+    for name in ("bagbak.cmd", "bagbak") if os.name == "nt" else ("bagbak",):
+        p = os.path.join(root, "node_modules", ".bin", name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
 
 
 def find_bagbak():
@@ -115,6 +118,33 @@ def safe_name(text):
 
 
 _SOCK = None
+_ENV = None            # child environment carrying the password (only when connections are not shared)
+IS_WIN = os.name == "nt"
+# OpenSSH on Windows has no ControlMaster, so there each command logs in separately.
+SHARE_CONNECTION = not IS_WIN
+
+
+def private_tmpdir(prefix):
+    """0700 temp dir. /tmp (when it exists) keeps Unix-socket paths short on macOS."""
+    return tempfile.mkdtemp(prefix=prefix, dir="/tmp" if os.path.isdir("/tmp") else None)
+
+
+def make_askpass(tmp, var, password):
+    """SSH_ASKPASS helper + environment. The password lives only in the child's
+    environment, never in the helper file or on a command line."""
+    if IS_WIN:
+        py = os.path.join(tmp, "askpass.py")
+        helper = os.path.join(tmp, "askpass.cmd")
+        with open(py, "w") as fh:
+            fh.write(f"import os, sys\nsys.stdout.write(os.environ[{var!r}] + '\\n')\n")
+        with open(helper, "w") as fh:
+            fh.write(f'@"{sys.executable}" "{py}"\r\n')
+    else:
+        helper = os.path.join(tmp, "askpass.sh")
+        with open(helper, "w") as fh:
+            fh.write(f'#!/bin/sh\nprintf "%s\\n" "${var}"\n')
+        os.chmod(helper, 0o700)
+    return dict(os.environ, **{var: password}, SSH_ASKPASS=helper, SSH_ASKPASS_REQUIRE="force")
 
 
 def _base(a):
@@ -126,39 +156,33 @@ def _base(a):
 
 
 def open_master(a):
-    """Authenticate once (prompting for the password if needed); reuse for all calls."""
-    global _SOCK
+    """Authenticate once (prompting for the password if needed). On Unix the connection
+    is shared for every later call; on Windows each call logs in again."""
+    global _SOCK, _ENV
     import atexit
-    sock_dir = tempfile.mkdtemp(prefix="getipa-", dir="/tmp")  # mode 0700
-    _SOCK = os.path.join(sock_dir, "s")
-    cmd = _base(a)[:-1] + ["-o", "ControlMaster=yes", "-o", f"ControlPath={_SOCK}",
-                           "-o", "ControlPersist=10m", "-o", "NumberOfPasswordPrompts=1",
-                           f"{a.user}@{a.host}", "-fN"]
-    env, askpass = None, None
-    if a.password:
-        # Feed the password via SSH_ASKPASS (OpenSSH >= 8.4); it lives only in the
-        # child's environment, never on disk or on the command line.
-        fd, askpass = tempfile.mkstemp(prefix="getipa_askpass_")
-        os.write(fd, b'#!/bin/sh\nprintf "%s\\n" "$GETIPA_PW"\n')
-        os.close(fd)
-        os.chmod(askpass, 0o700)
-        env = dict(os.environ, GETIPA_PW=a.password, SSH_ASKPASS=askpass,
-                   SSH_ASKPASS_REQUIRE="force")
-    try:
-        rc = subprocess.run(cmd, env=env).returncode
-    finally:
-        if askpass:
-            os.unlink(askpass)
+    tmp = private_tmpdir("getipa-")
+    env = make_askpass(tmp, "GETIPA_PW", a.password) if a.password else None
+    tries = ["-o", "NumberOfPasswordPrompts=1"] if a.password else []
+    if SHARE_CONNECTION:
+        _SOCK = os.path.join(tmp, "s")
+        cmd = _base(a)[:-1] + ["-o", "ControlMaster=yes", "-o", f"ControlPath={_SOCK}",
+                               "-o", "ControlPersist=10m", *tries, f"{a.user}@{a.host}", "-fN"]
+    else:
+        cmd = _base(a)[:-1] + [*tries, f"{a.user}@{a.host}", "true"]
+        _ENV = env
+    rc = subprocess.run(cmd, env=env).returncode
     if rc != 0:
-        shutil.rmtree(sock_dir, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
         sys.exit(f"\nSSH login to {a.user}@{a.host}:{a.port} failed.\n"
                  "  - Wrong password? The jailbreak default is 'alpine' (change it!)\n"
                  "  - Rootless jailbreaks may need --user mobile\n"
                  "  - Check OpenSSH is running on the device, or use --key")
+
     def _cleanup():
-        subprocess.run(["ssh", "-O", "exit", "-o", f"ControlPath={_SOCK}",
-                        f"{a.user}@{a.host}"], capture_output=True)
-        shutil.rmtree(sock_dir, ignore_errors=True)
+        if SHARE_CONNECTION:
+            subprocess.run(["ssh", "-O", "exit", "-o", f"ControlPath={_SOCK}",
+                            f"{a.user}@{a.host}"], capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
     atexit.register(_cleanup)
 
 
@@ -170,7 +194,7 @@ def ssh_cmd(a):
 
 
 def run_remote(a, command, binary=False):
-    p = subprocess.run(ssh_cmd(a) + [command], capture_output=True)
+    p = subprocess.run(ssh_cmd(a) + [command], capture_output=True, env=_ENV)
     if p.returncode != 0:
         sys.exit(f"remote command failed: {p.stderr.decode(errors='replace').strip()}")
     return p.stdout if binary else p.stdout.decode(errors="replace")
@@ -181,7 +205,7 @@ def remote_mtimes(a):
     globs = ("/var/containers/Bundle/Application/*/*.app "
              "/private/var/containers/Bundle/Application/*/*.app")
     for fmt in ("stat -c '%Y\t%n'", "stat -f '%m\t%N'"):
-        p = subprocess.run(ssh_cmd(a) + [f"{fmt} {globs} 2>/dev/null"], capture_output=True)
+        p = subprocess.run(ssh_cmd(a) + [f"{fmt} {globs} 2>/dev/null"], capture_output=True, env=_ENV)
         if p.stdout.strip():
             out = {}
             for line in p.stdout.decode(errors="replace").splitlines():
@@ -332,7 +356,7 @@ def pull_ipa(a, bundle, out_dir):
         tar_path = os.path.join(work, "app.tar")
         with open(tar_path, "wb") as fh:
             p = subprocess.run(ssh_cmd(a) + [f"cd {shlex.quote(parent)} && tar -cf - {shlex.quote(app_name)}"],
-                               stdout=fh, stderr=subprocess.PIPE)
+                               stdout=fh, stderr=subprocess.PIPE, env=_ENV)
         if p.returncode != 0:
             sys.exit(f"tar failed: {p.stderr.decode(errors='replace')}")
         payload = os.path.join(work, "Payload")
@@ -514,6 +538,11 @@ def report_ipa(ipa_path):
 
 
 def main():
+    for _s in (sys.stdout, sys.stderr):      # Windows consoles default to a legacy codepage
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default=os.environ.get("GETIPA_HOST"),
                     help="device IP/host (or set GETIPA_HOST)")

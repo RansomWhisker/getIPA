@@ -7,7 +7,7 @@ name = "getipa"
 version = "1.0.1"
 description = "Pull an app from a jailbroken iPhone over SSH and package it as an IPA (decrypted via bagbak)"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = []
 
