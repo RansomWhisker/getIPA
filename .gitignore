@@ -1,0 +1,9 @@
+ipas/
+*.ipa
+*.tar
+__pycache__/
+*.pyc
+.DS_Store
+.env
+*.pem
+id_*
