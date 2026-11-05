@@ -51,7 +51,8 @@ getipa
 ```
 ```
 Username [root]: root
-Device IP (e.g. 192.168.1.x): 192.168.1.9
+Device IP (just the last number works, e.g. 9 = 192.168.1.9): 9
+[*] Using 192.168.1.9
 Password (blank = use SSH key/prompt):
 
 Recently installed apps (newest first):
@@ -60,6 +61,8 @@ Recently installed apps (newest first):
 Pick a number (or Enter to quit): 1
 [+] Wrote ipas/com.example.app_2.4.1.ipa
 ```
+
+Shorthand: typing just `9` means `192.168.1.9`, and `0.5` means `192.168.0.5` (works for `--host` too). Full IPs and hostnames are used as typed.
 
 ### Flags
 
