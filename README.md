@@ -31,7 +31,7 @@
 **With pipx (recommended):**
 
 ```sh
-pipx install git+https://github.com/RansomWhisker/getIPA
+pipx install getipa
 getipa --install-bagbak     # one-time: fetches the pinned bagbak (needs Node.js/npm) for decrypted dumps
 ```
 
