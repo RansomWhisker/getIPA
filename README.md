@@ -14,7 +14,7 @@
 - **Recent first** – apps sorted by install/update time; system apps (`com.apple.*`) excluded by default.
 - **One-shot or scripted** – flags and environment variables for automation.
 - **Built-in app report** – permissions, entitlements, ATS settings, URL schemes, frameworks and encryption status, for a fresh extraction or any local IPA.
-- **Encryption-aware** – detects FairPlay-encrypted binaries (`cryptid=1`) and hands off to [`bagbak`](https://github.com/ChiChou/bagbak) for a decrypted dump when installed.
+- **Encrypted *or* decrypted – your choice** – `--decrypted` / `--encrypted` / auto. Decryption is done by [`bagbak`](https://github.com/ChiChou/bagbak), which is **bundled** (installed by `./install.sh`).
 - **Hardened against a hostile device** – treats everything coming back from the phone as untrusted (see [Security](#security)).
 - **Zero dependencies** – Python 3.8+ standard library and your system `ssh`.
 
@@ -24,15 +24,21 @@
 |---|---|
 | Computer | macOS or Linux, Python 3.8+, OpenSSH client (8.4+ for password login) |
 | iPhone | Jailbroken, with OpenSSH running (`tar` is included on standard jailbreaks) |
-| Optional | [`bagbak`](https://github.com/ChiChou/bagbak) + `frida-server` on the device, to get *decrypted* IPAs |
+| For decrypted IPAs | Node.js + npm on the computer (bundles `bagbak`), and `frida-server` running on the iPhone |
 
 ## Install
 
 ```sh
 git clone https://github.com/RansomWhisker/getIPA.git
 cd getIPA
-./install.sh            # symlinks getipa into ~/.local/bin
+./install.sh            # links getipa into ~/.local/bin AND installs the bundled bagbak
 ```
+
+`install.sh` runs `npm ci` to fetch a **pinned** version of `bagbak` (see `package-lock.json`) into this folder — nothing is installed globally. Skip it with `SKIP_BAGBAK=1 ./install.sh` if you only want encrypted copies.
+
+**For decrypted IPAs you also need `frida-server` on the iPhone:** install it from your jailbreak's package manager (Sileo / Zebra — add the Frida repo `https://build.frida.re` if it isn't listed), make sure it's running, and keep its version in step with the Frida version `bagbak` bundles. If `getipa --decrypted` fails, this is the first thing to check.
+
+> If the bundled install fails, it is almost always Frida's native module not downloading (network reset) or lacking a prebuilt binary for your Node version. Re-run `./install.sh`, or switch to Node 20/22 LTS (`nvm install 22`).
 
 Make sure `~/.local/bin` is on your `PATH` (the installer tells you if it isn't).
 
@@ -73,6 +79,7 @@ getipa --host 192.168.1.9 --key ~/.ssh/id_ed25519 -n 25
 | `-b`, `--bundle-id` | Extract an app by bundle ID or name |
 | `--info` | Print the app report after extracting |
 | `--info-file IPA` | Print the report for a local `.ipa` and exit (no device needed) |
+| `--decrypted` / `--encrypted` | Require a decrypted IPA (via bagbak) / take the raw encrypted copy only. Same as `--mode decrypted\|encrypted`. Default `auto`. |
 | `--include-system` | Include `com.apple.*` apps |
 | `-o DIR` | Output directory (default `./ipas`) |
 | `--frida-host` | Let `bagbak` reach `frida-server` over the network |
@@ -100,10 +107,15 @@ Frameworks     1
 
 ## About encryption
 
-Apps installed from the App Store are **FairPlay-encrypted on disk**. Copying the bundle (which is all the manual method does) gives you an IPA whose main binary can't be disassembled. `getipa` checks for this:
+Apps installed from the App Store are **FairPlay-encrypted on disk**. A plain file copy gives you an IPA whose main binary can't be disassembled. getIPA lets you choose:
 
-- Encrypted + `bagbak` installed → a decrypted IPA is produced via Frida.
-- Encrypted, no `bagbak` → the IPA is still written, named `*_encrypted.ipa`, with instructions.
+| Mode | What you get |
+|---|---|
+| `--decrypted` | A decrypted IPA from the running app, via bagbak. Fails with a clear message if bagbak or frida-server is missing. |
+| `--encrypted` | The raw copy, named `*_encrypted.ipa`. Fast; fine for inspecting resources, `Info.plist`, entitlements. |
+| *auto* (default) | Copies the app; if its binary is encrypted it switches to bagbak, and falls back to the raw copy (with a warning) if that fails. |
+
+In interactive mode, `getipa` asks which one you want after you pick an app.
 
 ## Security
 
@@ -114,7 +126,7 @@ Apps installed from the App Store are **FairPlay-encrypted on disk**. Copying th
 - The tar stream from the device is extracted defensively: no path traversal, symlinks/hardlinks/devices skipped, permissions normalised.
 - Device-supplied names are sanitised before being printed or used in filenames or the `bagbak` command line.
 - One SSH connection is opened (control socket in a private `0700` directory) and reused; passwords go to `ssh` via a short-lived `SSH_ASKPASS` helper — never on the command line, never written to disk.
-- No telemetry, no network access other than your SSH connection.
+- No telemetry. At runtime the only network traffic is your SSH connection (and Frida, if you ask for a decrypted dump). The bundled `bagbak` is pinned to an exact version with a lockfile; `install.sh` is the only step that downloads anything.
 
 Good hygiene on your side: **change the default `alpine` password**, prefer SSH keys, and only run this on a trusted network. Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
@@ -128,6 +140,7 @@ For use **only on devices you own and apps you are authorized to analyze** — y
 |---|---|
 | `UNIX authentication refused` | Wrong password/user. Try `--user mobile` on rootless jailbreaks. |
 | `Too many authentication failures` | Wait a minute / restart OpenSSH on the device; use `--key`. |
+| Decrypting fails | Is `frida-server` running on the iPhone? Is its version compatible with bagbak's Frida? Try `--encrypted` for a raw copy. |
 | No apps listed | App may live outside `/var/containers/Bundle/Application` (e.g. TrollStore apps). |
 | `iTunesMetadata.plist not found` | Normal on many rootless setups; the IPA is still valid. |
 

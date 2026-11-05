@@ -1,0 +1,10 @@
+{
+  "name": "getipa-deps",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned dependencies bundled with getIPA (decryption via bagbak)",
+  "license": "MIT",
+  "dependencies": {
+    "bagbak": "5.1.2"
+  }
+}

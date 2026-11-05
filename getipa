@@ -39,6 +39,25 @@ BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
+def find_bagbak():
+    """Prefer the copy bundled in this repo (node_modules), then PATH."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    local = os.path.join(here, "node_modules", ".bin", "bagbak")
+    if os.path.isfile(local) and os.access(local, os.X_OK):
+        return local
+    return shutil.which("bagbak")
+
+
+def run_bagbak(a, bagbak, bid, out_dir):
+    """Run bagbak for bundle id `bid`. Returns True on success."""
+    if not BUNDLE_ID_RE.match(bid):
+        print("[!] Refusing to pass an unusual bundle id to bagbak.")
+        return False
+    os.makedirs(out_dir, exist_ok=True)
+    host_args = ["-H", a.host] if a.frida_host else []
+    return subprocess.run([bagbak, *host_args, "-o", out_dir, bid]).returncode == 0
+
+
 def clean(text):
     """Strip control/escape characters from device-supplied text before printing."""
     return _CTRL_RE.sub("?", str(text))
@@ -245,6 +264,19 @@ def safe_extract(tar_path, dest):
 
 def pull_ipa(a, bundle, out_dir):
     bid, name, ver, app_dir, info, _ = bundle
+    bagbak = find_bagbak()
+
+    if a.mode == "decrypted":
+        # Dump straight from the running app; no need to copy the encrypted bundle first.
+        if not bagbak:
+            sys.exit("bagbak is not installed. Run ./install.sh (or `npm install` in the "
+                     "getIPA folder), or use --mode encrypted.")
+        print(f"[*] Dumping decrypted {clean(bid)} with bagbak ...")
+        if not run_bagbak(a, bagbak, bid, out_dir):
+            sys.exit("bagbak failed. Is frida-server running on the device? "
+                     "(Use --mode encrypted for a raw copy.)")
+        return None
+
     work = tempfile.mkdtemp(prefix="getipa_")
     try:
         parent = os.path.dirname(app_dir)
@@ -264,17 +296,17 @@ def pull_ipa(a, bundle, out_dir):
         enc = bool(exe) and is_encrypted(os.path.join(payload, app_name, exe))
         if enc:
             print("[!] Main binary is FairPlay-encrypted (cryptid=1).")
-            if shutil.which("bagbak") and BUNDLE_ID_RE.match(bid):
-                print("[*] Delegating to bagbak for a decrypted IPA ...")
-                host_args = ["-H", f"{a.host}:27042"] if a.frida_host else []
-                os.makedirs(out_dir, exist_ok=True)
-                r = subprocess.run(["bagbak", *host_args, "-o", out_dir, bid])
-                if r.returncode == 0:
+            if a.mode == "encrypted":
+                print("    --mode encrypted: keeping the raw (encrypted) copy as requested.")
+            elif bagbak:
+                print("[*] Switching to bagbak for a decrypted IPA ...")
+                if run_bagbak(a, bagbak, bid, out_dir):
                     return None
-                print("[!] bagbak failed; falling back to the encrypted copy.")
+                print("[!] bagbak failed (is frida-server running on the device?); "
+                      "falling back to the encrypted copy.")
             else:
-                print("    Install bagbak (npm i -g bagbak) and make sure frida-server runs on "
-                      "the device, or use frida-ios-dump. Packaging the encrypted copy anyway.")
+                print("    bagbak not found. Run ./install.sh to bundle it. "
+                      "Packaging the encrypted copy anyway.")
 
         if a.info:
             report_appdir(os.path.join(payload, app_name))
@@ -447,6 +479,13 @@ def main():
     ap.add_argument("--include-system", action="store_true", help="include com.apple.* apps")
     ap.add_argument("--bundle-id", "-b", help="bundle id (or substring) to extract")
     ap.add_argument("-o", "--out", default="./ipas")
+    ap.add_argument("--mode", choices=["auto", "decrypted", "encrypted"], default="auto",
+                    help="auto: decrypt if possible, else raw copy (default) | "
+                         "decrypted: require a decrypted IPA | encrypted: raw copy only")
+    ap.add_argument("--decrypted", dest="mode", action="store_const", const="decrypted",
+                    help="shortcut for --mode decrypted")
+    ap.add_argument("--encrypted", dest="mode", action="store_const", const="encrypted",
+                    help="shortcut for --mode encrypted")
     ap.add_argument("--info", action="store_true",
                     help="print an app report (permissions, entitlements, ATS...) after extracting")
     ap.add_argument("--info-file", metavar="IPA",
@@ -490,6 +529,13 @@ def main():
         if not choice.isdigit() or not 1 <= int(choice) <= len(shown):
             return
         matches = [shown[int(choice) - 1]]
+        if a.mode == "auto":
+            have = find_bagbak() is not None
+            print("\nExtract as:")
+            print(f"  1) Decrypted IPA  (recommended; {'bagbak found' if have else 'bagbak NOT installed - run ./install.sh'})")
+            print("  2) Encrypted IPA  (raw copy, fastest, not analyzable)")
+            m = input("Choice [1]: ").strip() or "1"
+            a.mode = "encrypted" if m == "2" else "decrypted"
     else:
         matches = [x for x in apps if a.bundle_id == x[0]] or \
                   [x for x in apps if a.bundle_id.lower() in x[0].lower() or a.bundle_id.lower() in x[1].lower()]
