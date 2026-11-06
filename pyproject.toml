@@ -22,4 +22,4 @@ Source = "https://github.com/RansomWhisker/getIPA"
 packages = ["getipa_cli"]
 
 [tool.setuptools.package-data]
-getipa_cli = ["npm/package.json", "npm/package-lock.json"]
+getipa_cli = ["npm/package.json", "npm/package-lock.json", "npm/repair.mjs"]

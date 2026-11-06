@@ -14,7 +14,7 @@
 - **Recent first** – apps sorted by install/update time; system apps (`com.apple.*`) excluded by default.
 - **One-shot or scripted** – flags and environment variables for automation.
 - **Built-in app report** – permissions, entitlements, ATS settings, URL schemes, frameworks and encryption status, for a fresh extraction or any local IPA.
-- **Verified decryption** – after a decrypted dump, getipa checks the main binary and frameworks and warns loudly if anything is still encrypted (`cryptid=1`).
+- **Verified decryption, with self-repair** – after a decrypted dump, getipa checks the main binary and frameworks. bagbak sometimes leaves a small FairPlay region untouched (`cryptid=1`); getipa then reads just that region from the running app with Frida (read-only), patches it in and re-verifies. If a full dump fails on an app extension, it retries with the main app only. Anything still encrypted is reported loudly.
 - **Encrypted *or* decrypted – your choice** – `--decrypted` / `--encrypted` / auto. Decryption is done by [`bagbak`](https://github.com/ChiChou/bagbak), which is **bundled** (installed by `./install.sh`).
 - **Hardened against a hostile device** – treats everything coming back from the phone as untrusted (see [Security](#security)).
 - **Zero dependencies** – Python 3.9+ standard library and your system `ssh`.
