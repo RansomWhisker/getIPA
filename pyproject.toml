@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "getipa"
-version = "1.0.6"
+version = "1.0.7"
 description = "Pull an app from a jailbroken iPhone over SSH and package it as an IPA (decrypted via bagbak)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -15,7 +15,7 @@ dependencies = []
 getipa = "getipa_cli.cli:main"
 
 [project.urls]
-Homepage = "https://rudranetra.com/tools"
+Homepage = "https://rudranetra.com/tools/getipa/"
 Source = "https://github.com/RansomWhisker/getIPA"
 
 [tool.setuptools]
