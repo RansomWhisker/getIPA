@@ -151,6 +151,10 @@ Good hygiene on your side: **change the default `alpine` password**, prefer SSH 
 
 For use **only on devices you own and apps you are authorized to analyze** — your own apps, security research, interoperability, and personal backup, where the law permits. Don't use it to pirate software or circumvent licensing. You are responsible for complying with applicable laws and the terms of the software you handle.
 
+## Banner and colour
+
+On a terminal each run starts with a short logo, the version and links. It goes to stderr, so piped output and `--json` stay clean. Hide it with `--no-banner` or `NO_BANNER=1`; `NO_COLOR=1` turns colour off and `NO_ANIM=1` skips the animation.
+
 ## Troubleshooting
 
 | Symptom | Fix |

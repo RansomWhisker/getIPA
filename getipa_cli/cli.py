@@ -18,6 +18,8 @@ tool delegates to `bagbak` (npm i -g bagbak) when installed, which dumps decrypt
 binaries via Frida.
 """
 from . import __version__
+from ._color import colorize, paint
+from . import banner
 import argparse
 import json
 import os
@@ -38,6 +40,16 @@ USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._:\-]{0,252}$")   # no leading '-', no spaces
 BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+
+_builtin_print = print
+
+
+def print(*args, **kw):  # noqa: A001  (status lines get colour by prefix; everything else is untouched)
+    if len(args) == 1 and isinstance(args[0], str):
+        args = (colorize(args[0], kw.get("file")),)
+    _builtin_print(*args, **kw)
 
 
 def expand_host(text):
@@ -288,7 +300,8 @@ def fmt_time(t):
 
 def print_apps(apps):
     for i, (bid, name, ver, _, _, t) in enumerate(apps, 1):
-        print(f"{i:3}. {fmt_time(t):16}  {clean(bid):45} {clean(ver):10} {clean(name)}")
+        print(f"{paint(f'{i:3}.', 'cyan')} {paint(f'{fmt_time(t):16}', 'dim')}  {paint(f'{clean(bid):45}', 'bold')} "
+              f"{clean(ver):10} {clean(name)}")
 
 
 def is_encrypted(binary_path):
@@ -756,10 +769,10 @@ def report_appdir(app_dir):
     families = {1: "iPhone", 2: "iPad", 3: "Apple TV", 4: "Watch"}
 
     def row(label, value):
-        print(f"{label:<15}{value}")
+        print(f"{paint(f'{label:<15}', 'dim')}{value}")
 
     name = info.get("CFBundleDisplayName") or info.get("CFBundleName", "?")
-    print(f"\n== {clean(name)} ({clean(info.get('CFBundleIdentifier', '?'))}) ==")
+    print("\n" + paint(f"== {clean(name)} ({clean(info.get('CFBundleIdentifier', '?'))}) ==", "bcyan"))
     row("Version", f"{fmt_val(info.get('CFBundleShortVersionString', '?'))} "
                    f"(build {fmt_val(info.get('CFBundleVersion', '?'))})")
     row("Executable", clean(exe_name or "?"))
@@ -769,7 +782,7 @@ def report_appdir(app_dir):
         row("Device family", ", ".join(families.get(x, str(x)) for x in fam if isinstance(x, int)))
     if exe and os.path.isfile(exe):
         enc = is_encrypted(exe)
-        row("Encrypted", "YES (FairPlay, cryptid=1)" if enc else "no")
+        row("Encrypted", paint("YES (FairPlay, cryptid=1)", "bred") if enc else paint("no", "green"))
     schemes = sorted({sc for t in info.get("CFBundleURLTypes", []) if isinstance(t, dict)
                       for sc in t.get("CFBundleURLSchemes", []) if isinstance(sc, str)})
     if schemes:
@@ -778,10 +791,10 @@ def report_appdir(app_dir):
         row("Background", fmt_val(info["UIBackgroundModes"], 100))
     ats = info.get("NSAppTransportSecurity")
     if isinstance(ats, dict):
-        warn = "  <-- insecure" if ats.get("NSAllowsArbitraryLoads") is True else ""
-        row("ATS", f"customised: {fmt_val(ats, 80)}{warn}")
+        warn = paint("  <-- insecure", "bred") if ats.get("NSAllowsArbitraryLoads") is True else ""
+        row("ATS", f"{paint('customised', 'yellow')}: {fmt_val(ats, 80)}{warn}")
     else:
-        row("ATS", "default (HTTPS enforced)")
+        row("ATS", paint("default (HTTPS enforced)", "green"))
     perms = sorted((k, v) for k, v in info.items()
                    if isinstance(k, str) and k.startswith("NS") and k.endswith("UsageDescription"))
     row("Permissions", f"{len(perms)}")
@@ -837,7 +850,7 @@ def report_ipa(ipa_path):
                     os.makedirs(os.path.join(skel, "Frameworks", safe_name(m.group(1))), exist_ok=True)
             if f"Payload/{app}/embedded.mobileprovision" in names:
                 open(os.path.join(skel, "embedded.mobileprovision"), "wb").close()
-        print(f"IPA: {clean(os.path.basename(ipa_path))}")
+        print(paint(f"IPA: {clean(os.path.basename(ipa_path))}", "bold"))
         report_appdir(skel)
     except zipfile.BadZipFile:
         sys.exit("not a valid zip/IPA file")
@@ -846,6 +859,8 @@ def report_ipa(ipa_path):
 
 
 def main():
+    banner.show("getIPA", __version__, "https://github.com/RansomWhisker/getIPA",
+                "pull decrypted IPAs from a jailbroken iPhone", suppress=banner.strip_flag())
     for _s in (sys.stdout, sys.stderr):      # Windows consoles default to a legacy codepage
         try:
             _s.reconfigure(encoding="utf-8", errors="replace")
@@ -916,7 +931,7 @@ def main():
         if not sys.stdin.isatty():
             print_apps(shown)
             return
-        print("Recently installed apps (newest first):")
+        print(paint("Recently installed apps (newest first):", "bcyan"))
         print_apps(shown)
         choice = input("Pick a number (or Enter to quit): ").strip()
         if not choice.isdigit() or not 1 <= int(choice) <= len(shown):
@@ -924,7 +939,7 @@ def main():
         matches = [shown[int(choice) - 1]]
         if a.mode == "auto":
             have = find_bagbak() is not None
-            print("\nExtract as:")
+            print("\n" + paint("Extract as:", "bcyan"))
             print(f"  1) Decrypted IPA  (recommended; {'bagbak found' if have else 'bagbak NOT installed - run getipa --install-bagbak'})")
             print("  2) Encrypted IPA  (raw copy, fastest, not analyzable)")
             m = input("Choice [1]: ").strip() or "1"
