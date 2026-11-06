@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "getipa"
-version = "1.0.4"
+version = "1.0.5"
 description = "Pull an app from a jailbroken iPhone over SSH and package it as an IPA (decrypted via bagbak)"
 readme = "README.md"
 requires-python = ">=3.9"
