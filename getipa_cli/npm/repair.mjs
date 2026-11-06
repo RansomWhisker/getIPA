@@ -7,11 +7,19 @@ import frida from 'frida';
 const [bid, rangesJson, host] = process.argv.slice(2);
 const ranges = JSON.parse(rangesJson);
 const mgr = frida.getDeviceManager();
-const dev = host ? await mgr.addRemoteDevice(host) : await frida.getUsbDevice({ timeout: 8000 });
+const devId = process.env.GETIPA_DEVICE;   // set by getipa when several USB devices are attached
+const dev = host ? await mgr.addRemoteDevice(host)
+  : devId ? await mgr.getDeviceById(devId, 8000) : await frida.getUsbDevice({ timeout: 8000 });
+const delay = Number(process.env.GETIPA_DELAY_MS ?? 3500);
 const pid = await dev.spawn([bid]);
-await dev.resume(pid);
-await new Promise(r => setTimeout(r, 3500));          // let dyld map and the app settle
-const session = await dev.attach(pid);
+let session;
+if (delay < 0) {
+  session = await dev.attach(pid);        // read while still suspended: for apps that quit as soon as they run
+} else {
+  await dev.resume(pid);
+  await new Promise(r => setTimeout(r, delay));   // let dyld map and the app settle
+  session = await dev.attach(pid);
+}
 const src = `
   rpc.exports.read = function (r) {
     var m = r.module ? Process.getModuleByName(r.module) : Process.mainModule;

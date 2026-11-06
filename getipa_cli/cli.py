@@ -99,6 +99,31 @@ def install_bagbak():
     return False
 
 
+_IOS_DEVICE: dict = {}
+
+
+def ios_frida_device(a, root):
+    """Frida id of the USB iPhone, or None. Avoids bagbak/Frida picking a plugged-in Android phone."""
+    if a.frida_host:
+        return None
+    if "id" in _IOS_DEVICE:
+        return _IOS_DEVICE["id"]
+    helper, node = os.path.join(root, "devices.mjs"), shutil.which("node")
+    found = None
+    if node and os.path.isdir(os.path.join(root, "node_modules", "frida")):
+        try:
+            if helper != os.path.join(NPM_DIR, "devices.mjs"):
+                shutil.copyfile(os.path.join(NPM_DIR, "devices.mjs"), helper)
+            p = subprocess.run([node, helper], cwd=root, capture_output=True, timeout=30)
+            ids = json.loads(p.stdout.decode().strip().splitlines()[-1]) if p.returncode == 0 else []
+            if len(ids) == 1 and re.fullmatch(r"[A-Za-z0-9._:-]{8,100}", ids[0]):
+                found = ids[0]
+        except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
+            pass
+    _IOS_DEVICE["id"] = found
+    return found
+
+
 def run_bagbak(a, bagbak, bid, out_dir, mode=None):
     """Run bagbak for bundle id `bid`. Returns True on success."""
     if not BUNDLE_ID_RE.match(bid):
@@ -106,6 +131,9 @@ def run_bagbak(a, bagbak, bid, out_dir, mode=None):
         return False
     os.makedirs(out_dir, exist_ok=True)
     host_args = ["-H", a.host] if a.frida_host else []
+    dev = ios_frida_device(a, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(bagbak)))))
+    if dev:
+        host_args = ["-D", dev]
     return subprocess.run([bagbak, *host_args, "-o", out_dir, bid, *([mode] if mode else [])]).returncode == 0
 
 
@@ -490,11 +518,24 @@ def repair_encrypted_ipa(a, ipa_path, bid, bad):
     shutil.copyfile(os.path.join(NPM_DIR, "repair.mjs"), helper) if helper != os.path.join(NPM_DIR, "repair.mjs") else None
     cmd = [node, helper, bid, json.dumps(jobs)] + ([a.host] if a.frida_host else [])
     print("[*] Reading the still-encrypted region(s) from the running app (read-only) ...")
-    try:
-        p = subprocess.run(cmd, cwd=root, capture_output=True, timeout=120)
-        blobs = json.loads(p.stdout.decode().strip().splitlines()[-1]) if p.returncode == 0 else None
-    except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
-        blobs = None
+    blobs = None
+    for delay in ("3500", "1200", "400", "-1"):        # apps that quit quickly (jailbreak checks) need an earlier read
+        try:
+            env = dict(os.environ)
+            env["GETIPA_DELAY_MS"] = delay
+            dev = ios_frida_device(a, root)
+            if dev:
+                env["GETIPA_DEVICE"] = dev
+            p = subprocess.run(cmd, cwd=root, capture_output=True, timeout=120, env=env)
+            blobs = json.loads(p.stdout.decode().strip().splitlines()[-1]) if p.returncode == 0 else None
+            if p.returncode != 0:
+                msg = [l for l in p.stderr.decode("utf-8", "replace").splitlines() if "Error" in l or "error" in l]
+                if msg:
+                    print("    " + clean(msg[-1].strip())[:160] + f"  (waited {delay} ms)")
+        except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
+            blobs = None
+        if blobs and len(blobs) == len(plan):
+            break
     if not blobs or len(blobs) != len(plan):
         print("[!] Could not read the decrypted pages from the device.")
         return False
@@ -599,6 +640,7 @@ def pull_ipa(a, bundle, out_dir):
             sys.exit("bagbak failed. Is frida-server running on the device (and does its version match "
                      "bagbak's Frida)? Use --mode encrypted for a raw copy.")
 
+    try_repair = False
     work = tempfile.mkdtemp(prefix="getipa_")
     try:
         parent = os.path.dirname(app_dir)
@@ -632,6 +674,7 @@ def pull_ipa(a, bundle, out_dir):
                     return None
                 print("[!] bagbak failed (is frida-server running on the device?); "
                       "falling back to the encrypted copy.")
+                try_repair = True        # still try to read the decrypted pages straight from the app
             elif not bagbak:
                 print("    bagbak not found. Run `getipa --install-bagbak`. "
                       "Packaging the encrypted copy anyway.")
@@ -654,7 +697,9 @@ def pull_ipa(a, bundle, out_dir):
             except SystemExit:
                 print("[!] Warning: iTunesMetadata.plist not found next to the .app "
                       "(common on rootless jailbreaks); IPA written without it.")
-        if a.mode == "decrypted":
+        if a.mode == "decrypted" or try_repair:
+            if try_repair:
+                print("[*] Trying to recover the decrypted code from the app directly ...")
             report_decryption(ipa, a, bid)
             if enc and encrypted_binaries(ipa) == [] and ipa.endswith("_encrypted.ipa"):
                 fixed = ipa[:-len("_encrypted.ipa")] + ".ipa"
