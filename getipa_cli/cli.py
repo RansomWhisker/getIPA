@@ -19,6 +19,7 @@ binaries via Frida.
 """
 from . import __version__
 import argparse
+import json
 import os
 import plistlib
 import re
@@ -98,14 +99,14 @@ def install_bagbak():
     return False
 
 
-def run_bagbak(a, bagbak, bid, out_dir):
+def run_bagbak(a, bagbak, bid, out_dir, mode=None):
     """Run bagbak for bundle id `bid`. Returns True on success."""
     if not BUNDLE_ID_RE.match(bid):
         print("[!] Refusing to pass an unusual bundle id to bagbak.")
         return False
     os.makedirs(out_dir, exist_ok=True)
     host_args = ["-H", a.host] if a.frida_host else []
-    return subprocess.run([bagbak, *host_args, "-o", out_dir, bid]).returncode == 0
+    return subprocess.run([bagbak, *host_args, "-o", out_dir, bid, *([mode] if mode else [])]).returncode == 0
 
 
 def clean(text):
@@ -347,7 +348,7 @@ def find_new_ipa(out_dir, since):
     return best
 
 
-def encrypted_binaries(ipa_path):
+def encrypted_binaries(ipa_path, include_extensions=False):
     """Names of Mach-O files in the IPA (main binary + frameworks) that are still
     FairPlay-encrypted. Returns None if the IPA can't be inspected."""
     import zipfile
@@ -363,6 +364,14 @@ def encrypted_binaries(ipa_path):
             cands = [app_prefix + exe] if exe else []
             cands += [n for n in names
                       if re.fullmatch(re.escape(app_prefix) + r"Frameworks/([^/]+)\.framework/\1", n)]
+            if include_extensions:
+                for pl in (n for n in names if re.fullmatch(re.escape(app_prefix) + r"PlugIns/[^/]+\.appex/Info\.plist", n)):
+                    try:
+                        ex = plistlib.loads(z.read(pl)).get("CFBundleExecutable")
+                    except Exception:
+                        continue
+                    if ex:
+                        cands.append(pl.rsplit("/", 1)[0] + "/" + ex)
             bad = []
             for n in cands:
                 if n not in names:
@@ -378,13 +387,149 @@ def encrypted_binaries(ipa_path):
         return None
 
 
-def verify_decrypted(out_dir, since):
-    """After a bagbak dump: say loudly if the main binary (or a framework) is still encrypted."""
-    ipa = find_new_ipa(out_dir, since)
-    if not ipa:
-        print("[!] Could not find the dumped IPA to verify it.")
-        return
+# ------------------------------------------------ repair leftover encrypted pages
+
+def macho_encryption_layout(data):
+    """For a thin or fat Mach-O (bytes), return a list of dicts, one per slice that has a
+    LC_ENCRYPTION_INFO(_64): slice_off, lc_off, cryptoff, cryptsize, cryptid, segments."""
+    slices = []
+    if len(data) < 32:
+        return slices
+    magic = struct.unpack_from("<I", data, 0)[0]
+    if magic in (0xBEBAFECA, 0xBFBAFECA):                       # fat (big-endian header)
+        wide = magic == 0xBFBAFECA
+        n = struct.unpack_from(">I", data, 4)[0]
+        esz = 32 if wide else 20
+        for i in range(min(n, 8)):
+            base = 8 + i * esz
+            off = struct.unpack_from(">Q" if wide else ">I", data, base + (8 if wide else 8))[0]
+            slices.append(off)
+    else:
+        slices.append(0)
+    out = []
+    for so in slices:
+        if so + 32 > len(data) or struct.unpack_from("<I", data, so)[0] != 0xFEEDFACF:   # 64-bit only
+            continue
+        ncmds = struct.unpack_from("<I", data, so + 16)[0]
+        o, segs, enc = so + 32, [], None
+        for _ in range(min(ncmds, 4096)):
+            if o + 8 > len(data):
+                break
+            cmd, size = struct.unpack_from("<II", data, o)
+            if cmd == 0x19 and o + 56 <= len(data):
+                vmaddr, vmsize, fileoff, filesize = struct.unpack_from("<QQQQ", data, o + 24)
+                segs.append((vmaddr, vmsize, fileoff, filesize))
+            elif cmd == 0x2C and o + 24 <= len(data):
+                cryptoff, cryptsize, cryptid = struct.unpack_from("<III", data, o + 8)
+                enc = (o, cryptoff, cryptsize, cryptid)
+            if size < 8:
+                break
+            o += size
+        if enc and enc[3] != 0:
+            out.append({"slice_off": so, "lc_off": enc[0], "cryptoff": enc[1], "cryptsize": enc[2],
+                        "cryptid": enc[3], "segments": segs})
+    return out
+
+
+def runtime_offset(segments, fileoff):
+    """Offset from the module's load address for a file offset (module base == first segment with vmaddr>0)."""
+    text_vm = next((s[0] for s in segments if s[0] > 0), None)
+    for vmaddr, vmsize, foff, fsize in segments:
+        if fsize and foff <= fileoff < foff + fsize and text_vm is not None:
+            return vmaddr - text_vm + (fileoff - foff)
+    return None
+
+
+def _entropy(b):
+    import math
+    from collections import Counter
+    if not b:
+        return 0.0
+    n = len(b)
+    return -sum(v / n * math.log2(v / n) for v in Counter(b).values())
+
+
+def repair_encrypted_ipa(a, ipa_path, bid, bad):
+    """bagbak sometimes leaves a small FairPlay region untouched (cryptid stays 1). The decrypted
+    bytes are in the running app's memory, so read just those ranges with Frida (read-only),
+    patch them into the IPA and clear cryptid. Returns True if something was repaired."""
+    node = shutil.which("node")
+    for root in (NPM_DIR, data_dir()):
+        if os.path.isdir(os.path.join(root, "node_modules", "frida")):
+            break
+    else:
+        return False
+    if not node or not BUNDLE_ID_RE.match(bid):
+        return False
+    with zipfile.ZipFile(ipa_path) as z:
+        names = z.namelist()
+        plist_name = next(n for n in names if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", n))
+        prefix = plist_name.rsplit("/", 1)[0] + "/"
+        exe = plistlib.loads(z.read(plist_name)).get("CFBundleExecutable")
+        targets = {}                                   # zip name -> (module or None, bytes, layouts)
+        for n in bad:
+            full = prefix + n
+            data = bytearray(z.read(full))
+            layouts = macho_encryption_layout(bytes(data))
+            if layouts:
+                module = None if n == exe else os.path.basename(n)
+                targets[full] = (module, data, layouts)
+    if not targets:
+        return False
+    plan, jobs = [], []
+    for full, (module, data, layouts) in targets.items():
+        for lay in layouts:
+            off = runtime_offset(lay["segments"], lay["cryptoff"])
+            if off is None or lay["cryptsize"] > (256 << 20):
+                continue
+            plan.append((full, lay))
+            jobs.append({"module": module, "off": off, "size": lay["cryptsize"]})
+    if not jobs:
+        return False
+    helper = os.path.join(root, "repair.mjs")
+    shutil.copyfile(os.path.join(NPM_DIR, "repair.mjs"), helper) if helper != os.path.join(NPM_DIR, "repair.mjs") else None
+    cmd = [node, helper, bid, json.dumps(jobs)] + ([a.host] if a.frida_host else [])
+    print("[*] Reading the still-encrypted region(s) from the running app (read-only) ...")
+    try:
+        p = subprocess.run(cmd, cwd=root, capture_output=True, timeout=120)
+        blobs = json.loads(p.stdout.decode().strip().splitlines()[-1]) if p.returncode == 0 else None
+    except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
+        blobs = None
+    if not blobs or len(blobs) != len(plan):
+        print("[!] Could not read the decrypted pages from the device.")
+        return False
+    import base64
+    for (full, lay), b64 in zip(plan, blobs):
+        mem = base64.b64decode(b64)
+        if len(mem) != lay["cryptsize"] or _entropy(mem) >= 7.5:
+            print("[!] The device returned data that still looks encrypted; leaving the IPA unchanged.")
+            return False
+        data = targets[full][1]
+        start = lay["slice_off"] + lay["cryptoff"]
+        data[start:start + len(mem)] = mem
+        struct.pack_into("<I", data, lay["lc_off"] + 16, 0)           # cryptid = 0
+    tmp = ipa_path + ".repairing"
+    with zipfile.ZipFile(ipa_path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            if item.filename in targets:
+                zout.writestr(item, bytes(targets[item.filename][1]))
+            else:
+                zout.writestr(item, zin.read(item.filename))
+    os.replace(tmp, ipa_path)
+    print(f"[+] Repaired {len(plan)} encrypted region(s) from the running app.")
+    return True
+
+
+def report_decryption(ipa, a=None, bid=None):
+    """Say loudly if the main binary (or a framework) of `ipa` is still encrypted."""
     bad = encrypted_binaries(ipa)
+    if bad and a is not None and bid:
+        print("[!] Some binaries are still encrypted after the dump (cryptid=1).")
+        try:
+            if repair_encrypted_ipa(a, ipa, bid, bad):
+                bad = encrypted_binaries(ipa)
+        except (OSError, zipfile.BadZipFile, StopIteration, ValueError, KeyError, struct.error) as e:
+            print(f"[!] Repair failed: {type(e).__name__}: {e}")
     if bad is None:
         print("[!] Could not verify decryption (unreadable IPA).")
     elif bad:
@@ -393,11 +538,49 @@ def verify_decrypted(out_dir, since):
         print("    Re-run the dump (make sure frida-server is running and matches bagbak's Frida version).")
     else:
         print("[+] Verified: main binary and frameworks are decrypted (cryptid=0).")
+        ext = encrypted_binaries(ipa, include_extensions=True) or []
+        ext = [e for e in ext if ".appex/" in e]
+        if ext:
+            print("[i] App extensions still encrypted (rarely matter for analysis): "
+                  + ", ".join(clean(os.path.basename(os.path.dirname(e))) for e in ext[:6]))
+
+
+def verify_decrypted(out_dir, since, a=None, bid=None):
+    """After a bagbak dump: find the new IPA and verify it."""
+    ipa = find_new_ipa(out_dir, since)
+    if not ipa:
+        print("[!] Could not find the dumped IPA to verify it.")
+        return
+    report_decryption(ipa, a, bid)
+
+
+def decrypted_main_binary(a, bagbak, bid, exe):
+    """Fallback when a full bagbak dump fails (often on an app extension): dump only the
+    main app and return the path of the decrypted main executable (inside a temp dir), or None."""
+    tmp = tempfile.mkdtemp(prefix="getipa_main_")
+    if not run_bagbak(a, bagbak, bid, tmp, mode="main"):
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
+    for fn in os.listdir(tmp):
+        if fn.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(os.path.join(tmp, fn)) as z:
+                    name = "binaries/" + exe
+                    if name in z.namelist():
+                        dest = os.path.join(tmp, "main_exe")
+                        with z.open(name) as src, open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out)
+                        return dest
+            except (OSError, zipfile.BadZipFile):
+                pass
+    shutil.rmtree(tmp, ignore_errors=True)
+    return None
 
 
 def pull_ipa(a, bundle, out_dir):
     bid, name, ver, app_dir, info, _ = bundle
     bagbak = find_bagbak()
+    main_exe = None
 
     if a.mode == "decrypted":
         # Dump straight from the running app; no need to copy the encrypted bundle first.
@@ -406,11 +589,15 @@ def pull_ipa(a, bundle, out_dir):
                      "or use --mode encrypted.")
         print(f"[*] Dumping decrypted {clean(bid)} with bagbak ...")
         started = time.time()
-        if not run_bagbak(a, bagbak, bid, out_dir):
-            sys.exit("bagbak failed. Is frida-server running on the device? "
-                     "(Use --mode encrypted for a raw copy.)")
-        verify_decrypted(out_dir, started)
-        return None
+        if run_bagbak(a, bagbak, bid, out_dir):
+            verify_decrypted(out_dir, started, a, bid)
+            return None
+        print("[!] The full dump failed (often an app extension that can't be spawned).")
+        print("[*] Retrying with the main app only; extensions will stay as the installed copy ...")
+        main_exe = decrypted_main_binary(a, bagbak, bid, info.get("CFBundleExecutable") or "")
+        if not main_exe:
+            sys.exit("bagbak failed. Is frida-server running on the device (and does its version match "
+                     "bagbak's Frida)? Use --mode encrypted for a raw copy.")
 
     work = tempfile.mkdtemp(prefix="getipa_")
     try:
@@ -428,20 +615,24 @@ def pull_ipa(a, bundle, out_dir):
         safe_extract(tar_path, payload)
 
         exe = info.get("CFBundleExecutable")
+        if main_exe and exe:
+            shutil.copyfile(main_exe, os.path.join(payload, app_name, exe))
+            shutil.rmtree(os.path.dirname(main_exe), ignore_errors=True)
+            print("[+] Replaced the main binary with the decrypted one.")
         enc = bool(exe) and is_encrypted(os.path.join(payload, app_name, exe))
         if enc:
             print("[!] Main binary is FairPlay-encrypted (cryptid=1).")
             if a.mode == "encrypted":
                 print("    --mode encrypted: keeping the raw (encrypted) copy as requested.")
-            elif bagbak:
+            elif bagbak and not main_exe:
                 print("[*] Switching to bagbak for a decrypted IPA ...")
                 started = time.time()
                 if run_bagbak(a, bagbak, bid, out_dir):
-                    verify_decrypted(out_dir, started)
+                    verify_decrypted(out_dir, started, a, bid)
                     return None
                 print("[!] bagbak failed (is frida-server running on the device?); "
                       "falling back to the encrypted copy.")
-            else:
+            elif not bagbak:
                 print("    bagbak not found. Run `getipa --install-bagbak`. "
                       "Packaging the encrypted copy anyway.")
 
@@ -463,6 +654,12 @@ def pull_ipa(a, bundle, out_dir):
             except SystemExit:
                 print("[!] Warning: iTunesMetadata.plist not found next to the .app "
                       "(common on rootless jailbreaks); IPA written without it.")
+        if a.mode == "decrypted":
+            report_decryption(ipa, a, bid)
+            if enc and encrypted_binaries(ipa) == [] and ipa.endswith("_encrypted.ipa"):
+                fixed = ipa[:-len("_encrypted.ipa")] + ".ipa"
+                os.replace(ipa, fixed)
+                ipa = fixed
         return ipa
     finally:
         shutil.rmtree(work, ignore_errors=True)

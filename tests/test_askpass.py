@@ -57,3 +57,25 @@ class VerifyDecrypted(unittest.TestCase):
         bad = os.path.join(tempfile.mkdtemp(), "x.ipa")
         open(bad, "wb").write(b"not a zip")
         self.assertIsNone(cli.encrypted_binaries(bad))
+
+
+class RepairLayout(unittest.TestCase):
+    def test_layout_and_runtime_offset(self):
+        import struct
+        segs = [struct.pack("<II16sQQQQiiII", 0x19, 72, b"__TEXT", 0x100000000, 0x20000, 0, 0x20000, 5, 5, 0, 0),
+                struct.pack("<II16sQQQQiiII", 0x19, 72, b"__DATA", 0x100020000, 0x10000, 0x20000, 0x10000, 3, 3, 0, 0)]
+        enc = struct.pack("<IIIIII", 0x2C, 24, 0x8000, 4096, 1, 0)
+        lcs = b"".join(segs) + enc
+        data = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 3, len(lcs), 0, 0) + lcs + b"\0" * 0x30000
+        lay = cli.macho_encryption_layout(data)
+        self.assertEqual(len(lay), 1)
+        self.assertEqual((lay[0]["cryptoff"], lay[0]["cryptsize"], lay[0]["cryptid"]), (0x8000, 4096, 1))
+        self.assertEqual(cli.runtime_offset(lay[0]["segments"], 0x8000), 0x8000)
+        self.assertEqual(cli.runtime_offset(lay[0]["segments"], 0x20010), 0x20010)
+        self.assertIsNone(cli.runtime_offset(lay[0]["segments"], 0x90000))
+
+    def test_decrypted_has_no_layout(self):
+        import struct
+        enc = struct.pack("<IIIIII", 0x2C, 24, 0x8000, 4096, 0, 0)
+        data = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, len(enc), 0, 0) + enc
+        self.assertEqual(cli.macho_encryption_layout(data), [])
