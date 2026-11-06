@@ -4,7 +4,7 @@
 
 `getipa` connects to your device over SSH, lists your installed App Store apps (newest first) (system apps filtered out), and builds a ready-to-use IPA. It automates the manual `ssh` → `cd` → `cp` → `zip` → `scp` routine, and flags the one thing that routine silently gets wrong: FairPlay encryption.
 
-> A tool by [**rudranetra.com**](https://rudranetra.com) · more at [rudranetra.com/tools](https://rudranetra.com/tools)
+> A tool by [**rudranetra.com**](https://rudranetra.com) · website: [rudranetra.com/tools/getipa](https://rudranetra.com/tools/getipa/) · more tools at [rudranetra.com/tools](https://rudranetra.com/tools)
 
 ---
 

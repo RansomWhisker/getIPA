@@ -860,7 +860,8 @@ def report_ipa(ipa_path):
 
 def main():
     banner.show("getIPA", __version__, "https://github.com/RansomWhisker/getIPA",
-                "pull decrypted IPAs from a jailbroken iPhone", suppress=banner.strip_flag())
+                "pull decrypted IPAs from a jailbroken iPhone", suppress=banner.strip_flag(),
+                website="https://rudranetra.com/tools/getipa/")
     for _s in (sys.stdout, sys.stderr):      # Windows consoles default to a legacy codepage
         try:
             _s.reconfigure(encoding="utf-8", errors="replace")
