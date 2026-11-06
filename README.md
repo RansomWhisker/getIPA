@@ -14,15 +14,16 @@
 - **Recent first** – apps sorted by install/update time; system apps (`com.apple.*`) excluded by default.
 - **One-shot or scripted** – flags and environment variables for automation.
 - **Built-in app report** – permissions, entitlements, ATS settings, URL schemes, frameworks and encryption status, for a fresh extraction or any local IPA.
+- **Verified decryption** – after a decrypted dump, getipa checks the main binary and frameworks and warns loudly if anything is still encrypted (`cryptid=1`).
 - **Encrypted *or* decrypted – your choice** – `--decrypted` / `--encrypted` / auto. Decryption is done by [`bagbak`](https://github.com/ChiChou/bagbak), which is **bundled** (installed by `./install.sh`).
 - **Hardened against a hostile device** – treats everything coming back from the phone as untrusted (see [Security](#security)).
-- **Zero dependencies** – Python 3.8+ standard library and your system `ssh`.
+- **Zero dependencies** – Python 3.9+ standard library and your system `ssh`.
 
 ## Requirements
 
 | Where | What |
 |---|---|
-| Computer | macOS or Linux, Python 3.8+, OpenSSH client (8.4+ for password login) |
+| Computer | macOS, Linux or Windows (experimental), Python 3.9+, OpenSSH client (8.4+ for password login) |
 | iPhone | Jailbroken, with OpenSSH running (`tar` is included on standard jailbreaks) |
 | For decrypted IPAs | Node.js + npm on the computer (bundles `bagbak`), and `frida-server` running on the iPhone |
 
@@ -50,6 +51,8 @@ cd getIPA
 **For decrypted IPAs you also need `frida-server` on the iPhone:** install it from your jailbreak's package manager (Sileo / Zebra — add the Frida repo `https://build.frida.re` if it isn't listed), make sure it's running, and keep its version in step with the Frida version `bagbak` bundles. If `getipa --decrypted` fails, this is the first thing to check.
 
 > If the bundled install fails, it is almost always Frida's native module not downloading (network reset) or lacking a prebuilt binary for your Node version. Re-run `./install.sh`, or switch to Node 20/22 LTS (`nvm install 22`).
+
+**Windows:** use `pipx install getipa` (needs Python and the built-in OpenSSH client). Windows OpenSSH can't share one connection, so each step logs in separately: an SSH key (`--key`) is the smoothest. Password login works through a small helper but is less tested than macOS/Linux. `install.sh` is Unix-only.
 
 Make sure `~/.local/bin` is on your `PATH` (the installer tells you if it isn't).
 

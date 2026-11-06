@@ -27,3 +27,33 @@ class Askpass(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerifyDecrypted(unittest.TestCase):
+    @staticmethod
+    def macho(cryptid):
+        import struct
+        lc = struct.pack("<IIIIII", 0x2C, 24, 4096, 4096, cryptid, 0)
+        return struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, len(lc), 0, 0) + lc + b"\0" * 64
+
+    def make_ipa(self, main_cryptid, fw_cryptid):
+        import plistlib
+        import zipfile
+        path = os.path.join(tempfile.mkdtemp(), "t.ipa")
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("Payload/A.app/Info.plist", plistlib.dumps({"CFBundleExecutable": "A"}))
+            z.writestr("Payload/A.app/A", self.macho(main_cryptid))
+            z.writestr("Payload/A.app/Frameworks/F.framework/F", self.macho(fw_cryptid))
+        return path
+
+    def test_detects_partial_decryption(self):
+        self.assertEqual(cli.encrypted_binaries(self.make_ipa(1, 0)), ["A"])
+        self.assertEqual(cli.encrypted_binaries(self.make_ipa(0, 1)), ["Frameworks/F.framework/F"])
+
+    def test_clean_ipa(self):
+        self.assertEqual(cli.encrypted_binaries(self.make_ipa(0, 0)), [])
+
+    def test_unreadable_is_none(self):
+        bad = os.path.join(tempfile.mkdtemp(), "x.ipa")
+        open(bad, "wb").write(b"not a zip")
+        self.assertIsNone(cli.encrypted_binaries(bad))

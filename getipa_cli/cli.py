@@ -333,6 +333,68 @@ def safe_extract(tar_path, dest):
         print(f"[!] Skipped {skipped} symlink/special entries (not followed for safety).")
 
 
+def find_new_ipa(out_dir, since):
+    """Newest .ipa in out_dir written at or after `since` (epoch seconds)."""
+    best = None
+    try:
+        for fn in os.listdir(out_dir):
+            fp = os.path.join(out_dir, fn)
+            if fn.lower().endswith(".ipa") and os.path.getmtime(fp) >= since - 2:
+                if best is None or os.path.getmtime(fp) > os.path.getmtime(best):
+                    best = fp
+    except OSError:
+        pass
+    return best
+
+
+def encrypted_binaries(ipa_path):
+    """Names of Mach-O files in the IPA (main binary + frameworks) that are still
+    FairPlay-encrypted. Returns None if the IPA can't be inspected."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(ipa_path) as z:
+            names = z.namelist()
+            plist_name = next((n for n in names if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", n)), None)
+            if not plist_name:
+                return None
+            app_prefix = plist_name.rsplit("/", 1)[0] + "/"
+            info = plistlib.loads(z.read(plist_name))
+            exe = info.get("CFBundleExecutable")
+            cands = [app_prefix + exe] if exe else []
+            cands += [n for n in names
+                      if re.fullmatch(re.escape(app_prefix) + r"Frameworks/([^/]+)\.framework/\1", n)]
+            bad = []
+            for n in cands:
+                if n not in names:
+                    continue
+                with tempfile.TemporaryDirectory(prefix="getipa_chk_") as td:
+                    fp = os.path.join(td, "bin")
+                    with z.open(n) as src, open(fp, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    if is_encrypted(fp):
+                        bad.append(n.split("/", 2)[-1])
+            return bad
+    except (OSError, zipfile.BadZipFile, ValueError, plistlib.InvalidFileException, KeyError):
+        return None
+
+
+def verify_decrypted(out_dir, since):
+    """After a bagbak dump: say loudly if the main binary (or a framework) is still encrypted."""
+    ipa = find_new_ipa(out_dir, since)
+    if not ipa:
+        print("[!] Could not find the dumped IPA to verify it.")
+        return
+    bad = encrypted_binaries(ipa)
+    if bad is None:
+        print("[!] Could not verify decryption (unreadable IPA).")
+    elif bad:
+        print(f"[!] WARNING: {os.path.basename(ipa)} is NOT fully decrypted.")
+        print("    Still encrypted: " + ", ".join(clean(b) for b in bad[:6]) + (" ..." if len(bad) > 6 else ""))
+        print("    Re-run the dump (make sure frida-server is running and matches bagbak's Frida version).")
+    else:
+        print("[+] Verified: main binary and frameworks are decrypted (cryptid=0).")
+
+
 def pull_ipa(a, bundle, out_dir):
     bid, name, ver, app_dir, info, _ = bundle
     bagbak = find_bagbak()
@@ -343,9 +405,11 @@ def pull_ipa(a, bundle, out_dir):
             sys.exit("bagbak is not installed. Run `getipa --install-bagbak`, "
                      "or use --mode encrypted.")
         print(f"[*] Dumping decrypted {clean(bid)} with bagbak ...")
+        started = time.time()
         if not run_bagbak(a, bagbak, bid, out_dir):
             sys.exit("bagbak failed. Is frida-server running on the device? "
                      "(Use --mode encrypted for a raw copy.)")
+        verify_decrypted(out_dir, started)
         return None
 
     work = tempfile.mkdtemp(prefix="getipa_")
@@ -371,7 +435,9 @@ def pull_ipa(a, bundle, out_dir):
                 print("    --mode encrypted: keeping the raw (encrypted) copy as requested.")
             elif bagbak:
                 print("[*] Switching to bagbak for a decrypted IPA ...")
+                started = time.time()
                 if run_bagbak(a, bagbak, bid, out_dir):
+                    verify_decrypted(out_dir, started)
                     return None
                 print("[!] bagbak failed (is frida-server running on the device?); "
                       "falling back to the encrypted copy.")
