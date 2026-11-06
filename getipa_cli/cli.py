@@ -873,8 +873,8 @@ def main():
     ap.add_argument("--user", default=os.environ.get("GETIPA_USER", "root"))
     ap.add_argument("--key", help="SSH private key path")
     ap.add_argument("--list", action="store_true", help="list user-installed apps, newest first")
-    ap.add_argument("--all", action="store_true", help="show every app (default: 10 most recent)")
-    ap.add_argument("-n", "--recent", type=int, default=10, help="how many recent apps to show")
+    ap.add_argument("--all", action="store_true", help="show every app (this is the default)")
+    ap.add_argument("-n", "--recent", type=int, default=None, help="only show the N most recently installed apps")
     ap.add_argument("--include-system", action="store_true", help="include com.apple.* apps")
     ap.add_argument("--bundle-id", "-b", help="bundle id (or substring) to extract")
     ap.add_argument("-o", "--out", default="./ipas")
@@ -923,7 +923,7 @@ def main():
         sys.exit(f"SSH key not found: {a.key}")
     open_master(a)
     apps = find_bundles(a, a.include_system)
-    shown = apps if a.all else apps[:a.recent]
+    shown = apps if (a.all or not a.recent) else apps[:a.recent]
     if a.list:
         print_apps(shown)
         return
@@ -931,7 +931,7 @@ def main():
         if not sys.stdin.isatty():
             print_apps(shown)
             return
-        print(paint("Recently installed apps (newest first):", "bcyan"))
+        print(paint("Installed apps (newest first):", "bcyan"))
         print_apps(shown)
         choice = input("Pick a number (or Enter to quit): ").strip()
         if not choice.isdigit() or not 1 <= int(choice) <= len(shown):

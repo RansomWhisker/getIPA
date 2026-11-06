@@ -2,7 +2,7 @@
 
 **Pull an app off your own jailbroken iPhone and package it as an `.ipa` — in one command.**
 
-`getipa` connects to your device over SSH, lists your recently installed App Store apps (system apps filtered out), and builds a ready-to-use IPA. It automates the manual `ssh` → `cd` → `cp` → `zip` → `scp` routine, and flags the one thing that routine silently gets wrong: FairPlay encryption.
+`getipa` connects to your device over SSH, lists your installed App Store apps (newest first) (system apps filtered out), and builds a ready-to-use IPA. It automates the manual `ssh` → `cd` → `cp` → `zip` → `scp` routine, and flags the one thing that routine silently gets wrong: FairPlay encryption.
 
 > A tool by [**rudranetra.com**](https://rudranetra.com) · more at [rudranetra.com/tools](https://rudranetra.com/tools)
 
@@ -92,7 +92,7 @@ getipa --host 192.168.1.9 --key ~/.ssh/id_ed25519 -n 25
 | `--host`, `--port`, `--user` | Connection details (defaults: port `22`, user `root`) |
 | `--key PATH` | SSH private key (recommended over passwords) |
 | `--list` | List apps and exit |
-| `-n N` / `--all` | Show the N most recent apps (default 10) / everything |
+| `-n N` / `--all` | Show only the N most recent apps / everything (the default) |
 | `-b`, `--bundle-id` | Extract an app by bundle ID or name |
 | `--info` | Print the app report after extracting |
 | `--info-file IPA` | Print the report for a local `.ipa` and exit (no device needed) |
